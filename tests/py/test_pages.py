@@ -1,12 +1,10 @@
 from __future__ import print_function, unicode_literals
 
 import re
-from decimal import Decimal as D
 
 from aspen import Response
 
 import pytest
-import mock
 from gratipay.security.user import SESSION
 from gratipay.testing import Harness
 from gratipay.wireup import find_files
@@ -18,11 +16,8 @@ overescaping_re = re.compile(r'&amp;(#[0-9]{4}|[a-z]+);')
 class TestPages(Harness):
 
     def browse(self, setup=None, **kw):
-        alice = self.make_participant('alice', claimed_time='now', number='plural')
-        exchange_id = self.make_exchange('balanced-cc', 19, 0, alice)
-        alice.insert_into_communities(True, 'Wonderland', 'wonderland')
-        alan = self.make_participant('alan', claimed_time='now')
-        alice.add_member(alan)
+        alice = self.make_participant('alice', claimed_time='now')
+        exchange_id = self.make_exchange('braintree-cc', 19, 0, alice)
         if setup:
             setup(alice)
         i = len(self.client.www_root)
@@ -66,15 +61,8 @@ class TestPages(Harness):
 
     def test_on_the_fence_can_browse(self):
         def setup(alice):
-            bob = self.make_participant('bob', claimed_time='now', last_bill_result='')
-            bob.set_tip_to(alice, D('1.00'))
+            alice.update_is_free_rider(None)
         self.browse(setup, auth_as='alice')
-
-    def test_escaping_on_homepage(self):
-        self.make_participant('alice', claimed_time='now')
-        expected = "<a href='/alice/'>"
-        actual = self.client.GET('/', auth_as='alice').body
-        assert expected in actual
 
     @pytest.mark.xfail(reason="migrating to Teams; #3399")
     def test_username_is_in_button(self):
@@ -102,30 +90,27 @@ class TestPages(Harness):
         assert self.client.GxT('/on/twitter/associate').code == 400
 
     def test_about(self):
-        expected = "give money every week"
+        expected = "We provide voluntary"
         actual = self.client.GET('/about/').body
         assert expected in actual
 
     def test_about_stats(self):
-        expected = "have joined Gratipay"
-        actual = self.client.GET('/about/stats.html').body
+        expected = "Gratipay processes"
+        actual = self.client.GET('/about/stats').body
         assert expected in actual
 
     def test_about_charts(self):
         assert self.client.GxT('/about/charts.html').code == 302
 
-    def test_about_faq(self):
-        expected = "What is Gratipay?"
-        actual = self.client.GET('/about/faq.html').body.decode('utf8')
-        assert expected in actual
-
     def test_about_teams_redirect(self):
         assert self.client.GxT('/about/teams/').code == 302
+        assert self.client.GxT('/about/features/teams/').code == 302
 
-    def test_about_teams(self):
-        expected = "Teams"
-        actual = self.client.GET('/about/features/teams/').body.decode('utf8')
-        assert expected in actual
+    def test_about_payments(self):
+        assert "Payments" in self.client.GET('/about/features/payments').body.decode('utf8')
+
+    def test_about_payroll(self):
+        assert "Payroll" in self.client.GET('/about/features/payroll').body.decode('utf8')
 
     def test_404(self):
         response = self.client.GET('/about/four-oh-four.html', raise_immediately=False)
@@ -163,18 +148,18 @@ class TestPages(Harness):
         expected = "123"
         assert expected in actual
 
-    def test_subscriptions_page(self):
+    def test_giving_page(self):
         self.make_team(is_approved=True)
         alice = self.make_participant('alice', claimed_time='now')
-        alice.set_subscription_to('TheATeam', "1.00")
-        assert "The A Team" in self.client.GET("/~alice/subscriptions/", auth_as="alice").body
+        alice.set_payment_instruction('TheEnterprise', "1.00")
+        assert "The Enterprise" in self.client.GET("/~alice/giving/", auth_as="alice").body
 
     def test_giving_page_shows_cancelled(self):
         self.make_team(is_approved=True)
         alice = self.make_participant('alice', claimed_time='now')
-        alice.set_subscription_to('TheATeam', "1.00")
-        alice.set_subscription_to('TheATeam', "0.00")
-        assert "Cancelled" in self.client.GET("/~alice/subscriptions/", auth_as="alice").body
+        alice.set_payment_instruction('TheEnterprise', "1.00")
+        alice.set_payment_instruction('TheEnterprise', "0.00")
+        assert "Cancelled" in self.client.GET("/~alice/giving/", auth_as="alice").body
 
     def test_new_participant_can_edit_profile(self):
         self.make_participant('alice', claimed_time='now')
@@ -207,12 +192,18 @@ class TestPages(Harness):
 
     def test_team_slug__not__redirected_from_tilde(self):
         self.make_team(is_approved=True)
-        assert self.client.GET("/TheATeam/").code == 200
-        assert self.client.GxT("/~TheATeam/").code == 404
+        assert self.client.GET("/TheEnterprise/").code == 200
+        assert self.client.GxT("/~TheEnterprise/").code == 404
 
-    @mock.patch('gratipay.models.participant.Participant.get_braintree_account')
-    @mock.patch('gratipay.models.participant.Participant.get_braintree_token')
-    def test_balanced_removed_from_credit_card_page(self, foo, bar):
-        self.make_participant('alice', claimed_time='now')
-        body = self.client.GET("/~alice/routes/credit-card.html", auth_as="alice").body
-        assert  "Balanced Payments" not in body
+
+    def test_security_headers_sets_x_frame_options(self):
+        headers = self.client.GET('/about/').headers
+        assert headers['X-Frame-Options'] == 'SAMEORIGIN'
+
+    def test_security_headers_sets_x_content_type_options(self):
+        headers = self.client.GET('/about/').headers
+        assert headers['X-Content-Type-Options'] == 'nosniff'
+
+    def test_security_headers_sets_x_xss_protection(self):
+        headers = self.client.GET('/about/').headers
+        assert headers['X-XSS-Protection'] == '1; mode=block'
